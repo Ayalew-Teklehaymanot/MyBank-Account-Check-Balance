@@ -1,10 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<mule xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:apikit="http://www.mulesoft.org/schema/mule/mule-apikit" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd http://www.mulesoft.org/schema/mule/mule-apikit http://www.mulesoft.org/schema/mule/mule-apikit/current/mule-apikit.xsd http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd ">
+<mule xmlns:db="http://www.mulesoft.org/schema/mule/db" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:apikit="http://www.mulesoft.org/schema/mule/mule-apikit" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd http://www.mulesoft.org/schema/mule/mule-apikit http://www.mulesoft.org/schema/mule/mule-apikit/current/mule-apikit.xsd http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd 
+http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd">
     <http:listener-config name="mybank-account-check-balance-httpListenerConfig">
         <http:listener-connection host="0.0.0.0" port="8081" />
     </http:listener-config>
     <apikit:config name="mybank-account-check-balance-config" api="resource::c711f3ad-7c9a-48fa-8816-7396a84bfc28:mybank-account-check-balance:1.0.0:raml:zip:mybank-account-check-balance.raml" outboundHeadersMapName="outboundHeaders" httpStatusVarName="httpStatus" />
-    <flow name="mybank-account-check-balance-main">
+    <db:config name="Database_Config" doc:name="Database Config" doc:id="7c548e77-f989-44cf-bfe7-c6133bb23c63" >
+		<db:my-sql-connection host="${db.host}" port="${db.port}" user="${db.user}" password="${db.password}" database="${db.database}" />
+	</db:config>
+	<configuration-properties doc:name="Configuration properties" doc:id="29be42af-0a3e-4e23-9be7-1fce412fdad4" file="config.yaml" />
+	<flow name="mybank-account-check-balance-main">
         <http:listener config-ref="mybank-account-check-balance-httpListenerConfig" path="/api/*">
             <http:response statusCode="#[vars.httpStatus default 200]">
                 <http:headers>#[vars.outboundHeaders default {}]</http:headers>
@@ -124,7 +129,21 @@ output application/json
         </error-handler>
     </flow>
     <flow name="get:\checkbalance:mybank-account-check-balance-config">
-        <ee:transform doc:name="Transform Message">
+        <logger level="INFO" doc:name="API STARTED" doc:id="d6139d32-ebc5-490a-acdb-ceafc1e97d58" message="-----API STARTED-------"/>
+		<set-variable value="#[attributes.queryParams.custAccNum]" doc:name="AcctNum" doc:id="dc4bab13-eeb3-4171-b72f-c7f21de09619" variableName="AcctNum"/>
+		<db:select doc:name="Select" doc:id="7c84c32b-64d7-4b9c-b4d5-5695877e52e0" config-ref="Database_Config">
+			<db:sql ><![CDATA[select custAccNum,bankName from branch where custAccNum=:custAccNum and bankName=:bankName]]></db:sql>
+			<db:input-parameters ><![CDATA[#[output application/json
+---
+{
+	"bankName": attributes.queryParams.bankName,
+	"custAccNum": attributes.queryParams.custAccNum
+}]]]></db:input-parameters>
+		</db:select>
+		<choice doc:name="Choice" doc:id="43f3cf2f-3799-4b00-8b40-fe793df46e9e" >
+			<when expression="#[sizeOf(payload)&gt;=1]">
+				<logger level="INFO" doc:name="Record Found" doc:id="5c25478b-a894-4af7-9580-d1e0205f0857" message="------Record Found-------"/>
+				<ee:transform doc:name="Transform Message">
             <ee:message>
                 <ee:set-payload><![CDATA[%dw 2.0
 output application/json
@@ -134,5 +153,20 @@ output application/json
 }]]></ee:set-payload>
             </ee:message>
         </ee:transform>
+			</when>
+			<otherwise >
+				<logger level="INFO" doc:name="Logger" doc:id="910602f5-ae53-45dc-b5d2-1af7d6a141be" message="Recor Not Found"/>
+				<ee:transform doc:name="Transform Message" doc:id="c2339deb-eaaf-4e27-aa28-66a0763472de" >
+					<ee:message >
+						<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+{
+	"Status":"No Record is found with this account number: " ++ vars.AcctNum as Number
+}]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</otherwise>
+		</choice>
     </flow>
 </mule>
