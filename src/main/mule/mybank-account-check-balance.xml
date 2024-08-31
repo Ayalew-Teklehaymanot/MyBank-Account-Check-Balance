@@ -2,7 +2,7 @@
 <mule xmlns:db="http://www.mulesoft.org/schema/mule/db" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:apikit="http://www.mulesoft.org/schema/mule/mule-apikit" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd http://www.mulesoft.org/schema/mule/mule-apikit http://www.mulesoft.org/schema/mule/mule-apikit/current/mule-apikit.xsd http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd 
 http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd">
     <http:listener-config name="mybank-account-check-balance-httpListenerConfig">
-        <http:listener-connection host="0.0.0.0" port="8081" />
+        <http:listener-connection host="${http.host}" port="${http.port}" />
     </http:listener-config>
     <apikit:config name="mybank-account-check-balance-config" api="resource::c711f3ad-7c9a-48fa-8816-7396a84bfc28:mybank-account-check-balance:1.0.0:raml:zip:mybank-account-check-balance.raml" outboundHeadersMapName="outboundHeaders" httpStatusVarName="httpStatus" />
     <db:config name="Database_Config" doc:name="Database Config" doc:id="7c548e77-f989-44cf-bfe7-c6133bb23c63" >
@@ -130,29 +130,107 @@ output application/json
     </flow>
     <flow name="get:\checkbalance:mybank-account-check-balance-config">
         <logger level="INFO" doc:name="API STARTED" doc:id="d6139d32-ebc5-490a-acdb-ceafc1e97d58" message="-----API STARTED-------"/>
+		<set-variable value="#[attributes.queryParams]" doc:name="inputValues" doc:id="0b379320-003d-4b92-87be-b06aab151102" variableName="inputValues"/>
 		<set-variable value="#[attributes.queryParams.custAccNum]" doc:name="AcctNum" doc:id="dc4bab13-eeb3-4171-b72f-c7f21de09619" variableName="AcctNum"/>
 		<db:select doc:name="Select" doc:id="7c84c32b-64d7-4b9c-b4d5-5695877e52e0" config-ref="Database_Config">
-			<db:sql ><![CDATA[select custAccNum,bankName from branch where custAccNum=:custAccNum and bankName=:bankName]]></db:sql>
+			<db:sql ><![CDATA[select * from branch where custAccNum=:custAccNum and bankName=:bankName]]></db:sql>
 			<db:input-parameters ><![CDATA[#[output application/json
 ---
 {
 	"bankName": attributes.queryParams.bankName,
-	"custAccNum": attributes.queryParams.custAccNum
+	"custAccNum": attributes.queryParams.custAccNum,
+	"atmPin": attributes.queryParams.atmPin,
+	"accountType": attributes.queryParams.accountType
 }]]]></db:input-parameters>
 		</db:select>
 		<choice doc:name="Choice" doc:id="43f3cf2f-3799-4b00-8b40-fe793df46e9e" >
-			<when expression="#[sizeOf(payload)&gt;=1]">
-				<logger level="INFO" doc:name="Record Found" doc:id="5c25478b-a894-4af7-9580-d1e0205f0857" message="------Record Found-------"/>
-				<ee:transform doc:name="Transform Message">
+			<when expression="#[sizeOf(payload)&gt;=1 and payload.accountStatus[0] as String =='Active']">
+				<logger level="INFO" doc:name="Record Found from db" doc:id="5c25478b-a894-4af7-9580-d1e0205f0857" message="------Record Found------- "/>
+				<choice doc:name="Choice" doc:id="f18911ea-3cca-4a72-88ea-af62ec7c69df" >
+					<when expression="#[vars.inputValues.atmPin == payload.atmPin[0]]">
+						<ee:transform doc:name="Success">
             <ee:message>
                 <ee:set-payload><![CDATA[%dw 2.0
 output application/json
 ---
 {
-  status: "Your Account balance as of today is xxxx"
-}]]></ee:set-payload>
+  "status": "Your Account balance as of today " as String ++ now() as Date ++ " is: "++  payload.totalBalance[0] as String
+  
+  }]]></ee:set-payload>
             </ee:message>
         </ee:transform>
+					</when>
+					<otherwise >
+						<logger level="INFO" doc:name="PIN Not Correct" doc:id="0d915c3b-5976-4bc7-9e2c-32f198a36215" message="-------PIN Not Correct-------"/>
+						<set-variable value="#[payload.wrongPin[0]+ 1 as String]" doc:name="WrongPinAttempt" doc:id="1a79a2b0-3888-45f3-af6f-9bb00c8486fd" variableName="wrongPinAttempt"/>
+						<choice doc:name="Choice" doc:id="1c7319bc-7db8-42ea-9818-e3fb2f622069" >
+							<when expression="#[vars.wrongPinAttempt==3]">
+								<logger level="INFO" doc:name="Maximum Attempts Reached" doc:id="e097c192-3f4d-4302-a56d-18cb8b810c2d" message="-----Maximum Attempts Reached----"/>
+								<db:update doc:name='Update The account Status to "Locked"' doc:id="ec442b43-2173-45cb-a9b9-3b284fcbc3ea" config-ref="Database_Config">
+									<db:sql ><![CDATA[UPDATE branch SET  wrongPin = :wrongPinAttempt,accountStatus =:accountStatus
+WHERE custAccNum=:custAccNum and bankName=:bankName ]]></db:sql>
+									<db:input-parameters ><![CDATA[#[output application/json
+---
+{
+	accountStatus: "Locked",
+	wrongPinAttempt: vars.wrongPinAttempt,
+	custAccNum: vars.inputValues.custAccNum,
+	bankName: vars.inputValues.bankName
+}]]]></db:input-parameters>
+								</db:update>
+								<ee:transform doc:name="Max Wrong Pin Reached" doc:id="9e77d96c-b956-4e9a-8181-1099afe8a696" >
+									<ee:message >
+										<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+{
+	"message": "Maximum Wrong Pin Attempt reached and Account is Locked..."
+}]]></ee:set-payload>
+									</ee:message>
+								</ee:transform>
+							</when>
+							<otherwise >
+								<logger level="INFO" doc:name="Pin Login Failed" doc:id="9ee71a32-4065-48c1-8d15-5c685034aaba" message="-----Pin Login Failed-----"/>
+								<db:update doc:name="Update Wrong Pin Attempt" doc:id="e9e8e9f3-1a4c-4c24-a85f-db95440d2572" config-ref="Database_Config">
+							<db:sql><![CDATA[UPDATE branch 
+SET  wrongPin = :wrongPinAttempt
+WHERE custAccNum=:custAccNum and bankName=:bankName ]]></db:sql>
+							<db:input-parameters><![CDATA[#[output application/java
+---
+{
+	
+	wrongPinAttempt: vars.wrongPinAttempt,
+	custAccNum: vars.inputValues.custAccNum,
+	bankName: vars.inputValues.bankName
+}]]]></db:input-parameters>
+						</db:update>
+								<ee:transform doc:name="Pin Login Failed" doc:id="31d4353a-fa8b-4b61-9b63-c071c5b677ee" >
+									<ee:message >
+										<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+{
+	"status": "Pin attempt Failed. You have left attempts "++ (3-vars.wrongPinAttempt)
+}]]></ee:set-payload>
+									</ee:message>
+								</ee:transform>
+							</otherwise>
+						</choice>
+					</otherwise>
+				</choice>
+			</when>
+			<when expression="#[sizeOf(payload)&gt;=1 and payload.accountStatus[0] as String !='Active']">
+				<logger level="INFO" doc:name="ACCOUNT NOT ACTIVE" doc:id="b92c7dcc-fcc9-4c66-bbd1-3ac298524dfa" message='#["ACCOUNT NOT ACTIVE"]'/>
+				<ee:transform doc:name="Account Locked" doc:id="81d2760b-3327-44e4-b8ae-9072f6f52b02" >
+					<ee:message >
+						<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "status": "Your Account is locked; go to the nearest bank and fix the issue "
+  }]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
 			</when>
 			<otherwise >
 				<logger level="INFO" doc:name="Logger" doc:id="910602f5-ae53-45dc-b5d2-1af7d6a141be" message="Recor Not Found"/>
